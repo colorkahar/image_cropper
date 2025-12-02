@@ -25,6 +25,7 @@
     if ([@"cropImage" isEqualToString:call.method]) {
         _result = result;
         _arguments = call.arguments;
+        [self validateAspectRatioConstraints:call.arguments];
         NSString *sourcePath = call.arguments[@"source_path"];
         NSNumber *ratioX = call.arguments[@"ratio_x"];
         NSNumber *ratioY = call.arguments[@"ratio_y"];
@@ -89,6 +90,26 @@
             cropViewController.aspectRatioLockDimensionSwapEnabled = YES;
             cropViewController.aspectRatioLockEnabled = YES;
         }
+
+        // ========== ADD THIS (Mirrors Android Fix) ==========
+        NSNumber *maxWidth = call.arguments[@"max_width"];
+        NSNumber *maxHeight = call.arguments[@"max_height"];
+
+        if (maxWidth != (id)[NSNull null] && maxHeight != (id)[NSNull null]) {
+            CGFloat aspectRatioValue = [ratioX floatValue] / [ratioY floatValue];
+            CGFloat maxSizeRatio = [maxWidth floatValue] / [maxHeight floatValue];
+            CGFloat ratioDifference = fabs(aspectRatioValue - maxSizeRatio);
+
+            if (ratioDifference > aspectRatioValue * 0.01) {
+                NSLog(@"⚠️ [ImageCropper] Aspect ratio mismatch detected!");
+                NSLog(@"   Target ratio: %.3f (%.0f:%.0f)",
+                      aspectRatioValue, [ratioX floatValue], [ratioY floatValue]);
+                NSLog(@"   Max size ratio: %.3f (%.0fx%.0f)",
+                      maxSizeRatio, [maxWidth floatValue], [maxHeight floatValue]);
+                NSLog(@"   Warning: Output may be stretched!");
+            }
+        }
+        // ========== END NEW CODE ==========
 
         UIWindow *window = [UIApplication sharedApplication].delegate.window;
         if (!window) {
@@ -222,15 +243,40 @@
 
 # pragma TOCropViewControllerDelegate
 
-- (void)cropViewController:(TOCropViewController *)cropViewController didCropToImage:(UIImage *)image withRect:(CGRect)cropRect angle:(NSInteger)angle
-{
+- (void)cropViewController:(TOCropViewController *)cropViewController
+            didCropToImage:(UIImage *)image
+                  withRect:(CGRect)cropRect
+                     angle:(NSInteger)angle {
     image = [self normalizedImage:image];
+
+    // ========== ADD VALIDATION (Like Android) ==========
+    NSLog(@"========== [ImageCropper] Crop Result ==========");
+    NSLog(@"Initial: %.0fx%.0f (AR: %.3f)",
+          image.size.width, image.size.height,
+          image.size.width / image.size.height);
+
+    CGFloat originalAspectRatio = image.size.width / image.size.height;
+    // ========== END INITIAL LOG ==========
 
     NSNumber *maxWidth = [_arguments objectForKey:@"max_width"];
     NSNumber *maxHeight = [_arguments objectForKey:@"max_height"];
 
     if (maxWidth != (id)[NSNull null] && maxHeight != (id)[NSNull null]) {
         image = [self scaledImage:image maxWidth:maxWidth maxHeight:maxHeight];
+
+        // ========== VALIDATE OUTPUT (Like Android) ==========
+        CGFloat scaledAspectRatio = image.size.width / image.size.height;
+        CGFloat aspectRatioDiff = fabs(scaledAspectRatio - originalAspectRatio);
+
+        if (aspectRatioDiff > originalAspectRatio * 0.01) {
+            NSLog(@"❌ [ImageCropper] ASPECT RATIO VIOLATION!");
+            NSLog(@"   Original AR: %.3f", originalAspectRatio);
+            NSLog(@"   Scaled AR: %.3f", scaledAspectRatio);
+        } else {
+            NSLog(@"✅ [ImageCropper] Aspect ratio preserved");
+        }
+        NSLog(@"================================================");
+        // ========== END VALIDATION ==========
     }
 
     NSString *guid = [[NSProcessInfo processInfo] globallyUniqueString];
@@ -291,51 +337,94 @@
 - (UIImage *)scaledImage:(UIImage *)image
                 maxWidth:(NSNumber *)maxWidth
                maxHeight:(NSNumber *)maxHeight {
-    double originalWidth = image.size.width;
-    double originalHeight = image.size.height;
+    CGFloat originalWidth = image.size.width;
+    CGFloat originalHeight = image.size.height;
+    CGFloat originalAspectRatio = originalWidth / originalHeight;
 
-    bool hasMaxWidth = maxWidth != (id)[NSNull null];
-    bool hasMaxHeight = maxHeight != (id)[NSNull null];
+    BOOL hasMaxWidth = maxWidth != (id)[NSNull null];
+    BOOL hasMaxHeight = maxHeight != (id)[NSNull null];
 
-    double width = hasMaxWidth ? MIN([maxWidth doubleValue], originalWidth) : originalWidth;
-    double height = hasMaxHeight ? MIN([maxHeight doubleValue], originalHeight) : originalHeight;
+    if (!hasMaxWidth && !hasMaxHeight) {
+        return image;
+    }
 
-    bool shouldDownscaleWidth = hasMaxWidth && [maxWidth doubleValue] < originalWidth;
-    bool shouldDownscaleHeight = hasMaxHeight && [maxHeight doubleValue] < originalHeight;
-    bool shouldDownscale = shouldDownscaleWidth || shouldDownscaleHeight;
+    CGFloat targetWidth = originalWidth;
+    CGFloat targetHeight = originalHeight;
 
-    if (shouldDownscale) {
-        double downscaledWidth = (height / originalHeight) * originalWidth;
-        double downscaledHeight = (width / originalWidth) * originalHeight;
+    // ========== SAME LOGIC AS ANDROID boxFitCover ==========
+    if (hasMaxWidth && hasMaxHeight) {
+        CGFloat maxW = [maxWidth doubleValue];
+        CGFloat maxH = [maxHeight doubleValue];
 
-        if (width < height) {
-            if (!hasMaxWidth) {
-                width = downscaledWidth;
-            } else {
-                height = downscaledHeight;
-            }
-        } else if (height < width) {
-            if (!hasMaxHeight) {
-                height = downscaledHeight;
-            } else {
-                width = downscaledWidth;
-            }
-        } else {
-            if (originalWidth < originalHeight) {
-                width = downscaledWidth;
-            } else if (originalHeight < originalWidth) {
-                height = downscaledHeight;
-            }
+        CGFloat scaleX = maxW / originalWidth;
+        CGFloat scaleY = maxH / originalHeight;
+        CGFloat scale = MIN(MIN(scaleX, scaleY), 1.0);  // BoxFit.contain
+
+        targetWidth = round(originalWidth * scale);
+        targetHeight = round(originalHeight * scale);
+
+    } else if (hasMaxWidth) {
+        CGFloat maxW = [maxWidth doubleValue];
+        if (originalWidth > maxW) {
+            targetWidth = maxW;
+            targetHeight = round(maxW / originalAspectRatio);
+        }
+    } else {
+        CGFloat maxH = [maxHeight doubleValue];
+        if (originalHeight > maxH) {
+            targetHeight = maxH;
+            targetWidth = round(maxH * originalAspectRatio);
         }
     }
 
-    UIGraphicsBeginImageContextWithOptions(CGSizeMake(width, height), NO, 1.0);
-    [image drawInRect:CGRectMake(0, 0, width, height)];
+    // ========== VALIDATE LIKE ANDROID ==========
+    CGFloat targetAspectRatio = targetWidth / targetHeight;
+    CGFloat aspectRatioDiff = fabs(targetAspectRatio - originalAspectRatio);
 
+    if (aspectRatioDiff > originalAspectRatio * 0.01) {
+        NSLog(@"⚠️ [ImageCropper] Correcting aspect ratio violation");
+
+        if (targetAspectRatio > originalAspectRatio) {
+            targetWidth = round(targetHeight * originalAspectRatio);
+        } else {
+            targetHeight = round(targetWidth / originalAspectRatio);
+        }
+    }
+    // ========== END VALIDATION ==========
+
+    if (targetWidth >= originalWidth && targetHeight >= originalHeight) {
+        return image;
+    }
+
+    NSLog(@"[ImageCropper] Scaling: %.0fx%.0f → %.0fx%.0f",
+          originalWidth, originalHeight, targetWidth, targetHeight);
+
+    UIGraphicsBeginImageContextWithOptions(CGSizeMake(targetWidth, targetHeight), NO, 1.0);
+    [image drawInRect:CGRectMake(0, 0, targetWidth, targetHeight)];
     UIImage *scaledImage = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
 
     return scaledImage;
+}
+
+- (void)validateAspectRatioConstraints:(NSDictionary*)arguments {
+    NSNumber *ratioX = arguments[@"ratio_x"];
+    NSNumber *ratioY = arguments[@"ratio_y"];
+    NSNumber *maxWidth = arguments[@"max_width"];
+    NSNumber *maxHeight = arguments[@"max_height"];
+
+    if (ratioX != (id)[NSNull null] && ratioY != (id)[NSNull null] &&
+        maxWidth != (id)[NSNull null] && maxHeight != (id)[NSNull null]) {
+
+        CGFloat targetAR = [ratioX floatValue] / [ratioY floatValue];
+        CGFloat maxSizeAR = [maxWidth floatValue] / [maxHeight floatValue];
+        CGFloat difference = fabs(targetAR - maxSizeAR) / targetAR * 100;
+
+        if (difference > 1.0) {
+            NSLog(@"⚠️ [ImageCropper] Aspect ratio mismatch: %.2f%%", difference);
+            NSLog(@"   Target: %.3f, Max size: %.3f", targetAR, maxSizeAR);
+        }
+    }
 }
 
 @end
