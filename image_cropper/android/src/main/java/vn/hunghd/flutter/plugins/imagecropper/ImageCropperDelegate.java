@@ -130,6 +130,32 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         activity.startActivityForResult(cropper.getIntent(activity), UCrop.REQUEST_CROP);
     }
 
+    private void validateAspectRatioConstraints(Double ratioX, Double ratioY, Integer maxWidth, Integer maxHeight) {
+        if (ratioX == null || ratioY == null || maxWidth == null || maxHeight == null) {
+            // Not all constraints specified, no validation needed
+            return;
+        }
+
+        float targetAspectRatio = ratioX.floatValue() / ratioY.floatValue();
+        float maxSizeAspectRatio = (float) maxWidth / maxHeight;
+
+        // Calculate percentage difference
+        float difference = Math.abs(targetAspectRatio - maxSizeAspectRatio) / targetAspectRatio * 100;
+
+        if (difference > 1.0f) {
+            // Log warning if aspect ratios differ by more than 1%
+            android.util.Log.w("ImageCropper",
+                    "Aspect ratio mismatch detected! " +
+                            "Target ratio: " + targetAspectRatio +
+                            " (" + ratioX + ":" + ratioY + "), " +
+                            "Max size ratio: " + maxSizeAspectRatio +
+                            " (" + maxWidth + "x" + maxHeight + "). " +
+                            "Difference: " + String.format("%.2f", difference) + "%. " +
+                            "Output may be stretched."
+            );
+        }
+    }
+
     private boolean validateOutputDimensions(String imagePath) {
         try {
             android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
@@ -206,27 +232,6 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         return false;
     }
 
-    private boolean validateOutputDimensions(String imagePath) {
-        try {
-            android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
-            options.inJustDecodeBounds = true;
-            android.graphics.BitmapFactory.decodeFile(imagePath, options);
-
-            int width = options.outWidth;
-            int height = options.outHeight;
-
-            android.util.Log.d("ImageCropper",
-                    "Output dimensions: " + width + "x" + height +
-                            ", Aspect ratio: " + String.format("%.3f", (float) width / height)
-            );
-
-            // Additional validation could be added here if needed
-            return true;
-        } catch (Exception e) {
-            android.util.Log.e("ImageCropper", "Failed to validate output dimensions", e);
-            return false;
-        }
-    }
 
     private void finishWithSuccess(String imagePath) {
         if (pendingResult != null) {
