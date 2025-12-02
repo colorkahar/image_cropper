@@ -130,6 +130,28 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         activity.startActivityForResult(cropper.getIntent(activity), UCrop.REQUEST_CROP);
     }
 
+    private boolean validateOutputDimensions(String imagePath) {
+        try {
+            android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(imagePath, options);
+
+            int width = options.outWidth;
+            int height = options.outHeight;
+
+            android.util.Log.d("ImageCropper",
+                    "Output dimensions: " + width + "x" + height +
+                            ", Aspect ratio: " + String.format("%.3f", (float) width / height)
+            );
+
+            // Additional validation could be added here if needed
+            return true;
+        } catch (Exception e) {
+            android.util.Log.e("ImageCropper", "Failed to validate output dimensions", e);
+            return false;
+        }
+    }
+
     public void recoverImage(MethodCall call, MethodChannel.Result result) {
         result.success(getAndClearCachedImage());
     }
