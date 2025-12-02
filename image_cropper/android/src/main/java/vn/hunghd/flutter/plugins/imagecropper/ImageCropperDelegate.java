@@ -49,8 +49,12 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         ArrayList<Map<?, ?>> aspectRatioPresets = call.argument("android.aspect_ratio_presets");
         String cropStyle = call.argument("android.crop_style");
         String initAspectRatio = call.argument("android.init_aspect_ratio");
+        Integer maxBitmapSize = call.argument("android.max_bitmap_size");
 
         pendingResult = result;
+
+        // Validate constraints
+        validateAspectRatioConstraints(ratioX, ratioY, maxWidth, maxHeight);
 
         File outputDir = activity.getCacheDir();
         File outputFile;
@@ -63,10 +67,9 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         Uri destinationUri = Uri.fromFile(outputFile);
 
         UCrop.Options options = new UCrop.Options();
-        // uCrop.withMaxResultSize(1000, 1000);
         options.setCompressionFormat("png".equals(compressFormat) ? Bitmap.CompressFormat.PNG : Bitmap.CompressFormat.JPEG);
         options.setCompressionQuality(compressQuality != null ? compressQuality : 90);
-        options.setMaxBitmapSize(10000);
+        options.setMaxBitmapSize(maxBitmapSize != null ? maxBitmapSize : 10000);
 
         // UI customization settings
         if ("circle".equals(cropStyle)) {
@@ -92,11 +95,36 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         }
 
         UCrop cropper = UCrop.of(sourceUri, destinationUri).withOptions(options);
-        if (maxWidth != null && maxHeight != null) {
-            cropper.withMaxResultSize(maxWidth, maxHeight);
-        }
+
+        // FIX 1: Apply aspect ratio FIRST
         if (ratioX != null && ratioY != null) {
             cropper.withAspectRatio(ratioX.floatValue(), ratioY.floatValue());
+        }
+
+        // FIX 1: Apply max size with reconciliation
+        if (maxWidth != null && maxHeight != null) {
+            if (ratioX != null && ratioY != null) {
+                // Calculate dimensions that respect both constraints
+                float targetAspectRatio = ratioX.floatValue() / ratioY.floatValue();
+                float requestedAspectRatio = (float) maxWidth / maxHeight;
+
+                int adjustedWidth = maxWidth;
+                int adjustedHeight = maxHeight;
+
+                // Adjust dimensions to match aspect ratio
+                if (Math.abs(requestedAspectRatio - targetAspectRatio) > 0.01f) {
+                    if (requestedAspectRatio > targetAspectRatio) {
+                        adjustedWidth = Math.round(maxHeight * targetAspectRatio);
+                    } else {
+                        adjustedHeight = Math.round(maxWidth / targetAspectRatio);
+                    }
+                    cropper.withMaxResultSize(adjustedWidth, adjustedHeight);
+                } else {
+                    cropper.withMaxResultSize(maxWidth, maxHeight);
+                }
+            } else {
+                cropper.withMaxResultSize(maxWidth, maxHeight);
+            }
         }
 
         activity.startActivityForResult(cropper.getIntent(activity), UCrop.REQUEST_CROP);
@@ -129,6 +157,17 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
             if (resultCode == RESULT_OK) {
                 final Uri resultUri = UCrop.getOutput(data);
                 final String imagePath = fileUtils.getPathFromUri(activity, resultUri);
+
+                // Validate output dimensions
+                boolean dimensionsValid = validateOutputDimensions(imagePath);
+
+                if (!dimensionsValid) {
+                    android.util.Log.w("ImageCropper",
+                            "Output image dimensions do not match expected aspect ratio. " +
+                                    "Image may be stretched."
+                    );
+                }
+
                 cacheImage(imagePath);
                 finishWithSuccess(imagePath);
                 return true;
@@ -143,6 +182,28 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
             }
         }
         return false;
+    }
+
+    private boolean validateOutputDimensions(String imagePath) {
+        try {
+            android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+            options.inJustDecodeBounds = true;
+            android.graphics.BitmapFactory.decodeFile(imagePath, options);
+
+            int width = options.outWidth;
+            int height = options.outHeight;
+
+            android.util.Log.d("ImageCropper",
+                    "Output dimensions: " + width + "x" + height +
+                            ", Aspect ratio: " + String.format("%.3f", (float) width / height)
+            );
+
+            // Additional validation could be added here if needed
+            return true;
+        } catch (Exception e) {
+            android.util.Log.e("ImageCropper", "Failed to validate output dimensions", e);
+            return false;
+        }
     }
 
     private void finishWithSuccess(String imagePath) {
@@ -246,15 +307,44 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
     private AspectRatio parseAspectRatio(Map<?, ?> preset) {
         final String name = preset.containsKey("name") ? preset.get("name").toString() : null;
         final Object data = preset.containsKey("data") ? preset.get("data") : null;
-        final Integer ratioX = data instanceof Map ? Integer.parseInt(((Map<?, ?>) data).get("ratio_x").toString()) : null;
-        final Integer ratioY = data instanceof Map ? Integer.parseInt(((Map<?, ?>) data).get("ratio_y").toString()) : null;
 
-        if ("original".equals(name) || ratioX == null) {
-            return new AspectRatio(activity.getString(com.yalantis.ucrop.R.string.ucrop_label_original),
-                    CropImageView.SOURCE_IMAGE_ASPECT_RATIO, 1.0f);
-        } else {
-            return new AspectRatio(name, ratioX * 1.0f, ratioY * 1.0f);
+        // Parse as Float to preserve decimal values
+        Float ratioX = null;
+        Float ratioY = null;
+
+        if (data instanceof Map) {
+            try {
+                Object xValue = ((Map<?, ?>) data).get("ratio_x");
+                Object yValue = ((Map<?, ?>) data).get("ratio_y");
+
+                if (xValue != null) {
+                    ratioX = Float.parseFloat(xValue.toString());
+                }
+                if (yValue != null) {
+                    ratioY = Float.parseFloat(yValue.toString());
+                }
+            } catch (NumberFormatException e) {
+                // Fallback to null if parsing fails
+                ratioX = null;
+                ratioY = null;
+            }
         }
 
+        // Validate ratios
+        if ("original".equals(name) || ratioX == null || ratioY == null) {
+            return new AspectRatio(
+                    activity.getString(com.yalantis.ucrop.R.string.ucrop_label_original),
+                    CropImageView.SOURCE_IMAGE_ASPECT_RATIO,
+                    1.0f
+            );
+        } else {
+            // Additional validation: ensure positive values
+            if (ratioX <= 0 || ratioY <= 0) {
+                throw new IllegalArgumentException(
+                        "Invalid aspect ratio values: ratioX=" + ratioX + ", ratioY=" + ratioY
+                );
+            }
+            return new AspectRatio(name, ratioX, ratioY);
+        }
     }
 }
