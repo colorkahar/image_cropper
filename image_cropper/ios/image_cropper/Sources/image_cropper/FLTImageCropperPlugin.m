@@ -292,8 +292,17 @@
         tmpFile = [NSString stringWithFormat:@"image_cropper_%@.jpg", guid];
     }
 
-    NSString *tmpDirectory = NSTemporaryDirectory();
-    NSString *tmpPath = [tmpDirectory stringByAppendingPathComponent:tmpFile];
+    // Use app Documents directory instead of NSTemporaryDirectory to prevent
+    // PathNotFoundException when iOS clears the tmp/cache directory.
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+    NSString *documentsDirectory = [paths firstObject];
+    NSString *cropperDirectory = [documentsDirectory stringByAppendingPathComponent:@"image_cropper"];
+    NSError *dirError = nil;
+    [[NSFileManager defaultManager] createDirectoryAtPath:cropperDirectory
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:&dirError];
+    NSString *tmpPath = [cropperDirectory stringByAppendingPathComponent:tmpFile];
 
     if (_result) {
         if ([[NSFileManager defaultManager] createFileAtPath:tmpPath contents:data attributes:nil]) {
