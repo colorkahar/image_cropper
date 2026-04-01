@@ -56,7 +56,12 @@ public class ImageCropperDelegate implements PluginRegistry.ActivityResultListen
         // Validate constraints
         validateAspectRatioConstraints(ratioX, ratioY, maxWidth, maxHeight);
 
-        File outputDir = activity.getCacheDir();
+        // Use app-specific files directory (getFilesDir) instead of getCacheDir to prevent
+        // PathNotFoundException when the OS clears the cache directory while the app is running.
+        File outputDir = new File(activity.getFilesDir(), "image_cropper");
+        if (!outputDir.exists()) {
+            outputDir.mkdirs();
+        }
         File outputFile;
         if ("png".equals(compressFormat)) {
             outputFile = new File(outputDir, "image_cropper_" + (new Date()).getTime() + ".png");
